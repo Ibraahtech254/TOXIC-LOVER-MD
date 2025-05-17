@@ -12,6 +12,12 @@ const {
     delay,
 } = require("@whiskeysockets/baileys");
 
+// Ensure temp directory exists
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+}
+
 async function removeFile(FilePath) {
     try {
         if (fs.existsSync(FilePath)) {
@@ -25,165 +31,145 @@ async function removeFile(FilePath) {
     }
 }
 
-const qrPageTemplate = (qrImage) => `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TOXIC-LOVER-MD QR Scanner</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            font-family: Arial, sans-serif;
-            color: white;
-        }
-        .qr-container {
-            text-align: center;
-            padding: 30px;
-            background: rgba(0, 0, 0, 0.7);
-            border-radius: 15px;
-            box-shadow: 0 0 25px rgba(255, 0, 100, 0.5);
-            border: 2px solid #ff0064;
-        }
-        .qr-image {
-            border: 5px solid white;
-            border-radius: 10px;
-            width: 250px;
-            height: 250px;
-        }
-        .title {
-            font-size: 24px;
-            margin-bottom: 20px;
-            color: #ff0064;
-            text-shadow: 0 0 10px rgba(255, 0, 100, 0.5);
-        }
-        .instructions {
-            margin-top: 20px;
-            font-size: 16px;
-        }
-        .toxic-brand {
-            margin-top: 30px;
-            font-size: 18px;
-            color: #ff0064;
-            font-weight: bold;
-        }
-    </style>
-</head>
-<body>
-    <div class="qr-container">
-        <div class="title">TOXIC-LOVER-MD</div>
-        <img class="qr-image" src="${qrImage}" alt="Scan this QR code">
-        <div class="instructions">
-            Scan this QR code with your WhatsApp mobile app<br>
-            to connect TOXIC-LOVER-MD
-        </div>
-        <div class="toxic-brand">
-            Powered by TOXIC-LOVER-MD
-        </div>
-    </div>
-</body>
-</html>
-`;
-
 router.get('/', async (req, res) => {
     const id = makeid();
+    const sessionDir = path.join(tempDir, id);
     let responseSent = false;
     let sessionClient;
 
+    console.log(`Starting new session with ID: ${id}`);
+
     async function TOXIC_LOVER_MD_QR_CODE() {
-        const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'temp', id));
         try {
+            console.log(`Initializing auth state for session ${id}`);
+            const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
             sessionClient = Maher_Zubair({
                 auth: state,
-                printQRInTerminal: false,
-                logger: pino({ level: "silent" }),
+                printQRInTerminal: true, // Enable for debugging
+                logger: pino({
+                    level: "debug", // Increased logging for debugging
+                    transport: {
+                        target: 'pino-pretty',
+                        options: { colorize: true }
+                    }
+                }),
                 browser: Browsers.ubuntu('Chrome'),
             });
 
             sessionClient.ev.on('creds.update', saveCreds);
             sessionClient.ev.on("connection.update", async (update) => {
+                console.log('Connection update:', JSON.stringify(update, null, 2));
+
                 const { connection, lastDisconnect, qr } = update;
 
                 if (qr && !responseSent) {
+                    console.log('QR code received, generating...');
                     try {
                         const qrImage = await QRCode.toDataURL(qr);
-                        res.send(qrPageTemplate(qrImage));
+                        res.send(`
+                            <!DOCTYPE html>
+                            <html>
+                            <head>
+                                <title>TOXIC-LOVER-MD QR</title>
+                                <style>
+                                    body { 
+                                        background: #000; 
+                                        display: flex; 
+                                        justify-content: center; 
+                                        align-items: center; 
+                                        height: 100vh; 
+                                        margin: 0; 
+                                        color: white;
+                                        font-family: Arial;
+                                    }
+                                    .container { 
+                                        text-align: center; 
+                                        padding: 20px;
+                                        border: 2px solid #ff0000;
+                                        border-radius: 10px;
+                                        background: #111;
+                                    }
+                                    img { 
+                                        max-width: 300px; 
+                                        height: auto; 
+                                        border: 5px solid white;
+                                    }
+                                </style>
+                            </head>
+                            <body>
+                                <div class="container">
+                                    <h1>TOXIC-LOVER-MD</h1>
+                                    <p>Scan this QR code with WhatsApp</p>
+                                    <img src="${qrImage}" alt="QR Code">
+                                    <p>Session ID: ${id}</p>
+                                </div>
+                            </body>
+                            </html>
+                        `);
                         responseSent = true;
                     } catch (err) {
-                        console.error('QR generation error:', err);
+                        console.error('QR generation failed:', err);
                         if (!responseSent) {
-                            res.status(500).json({ error: 'Failed to generate QR code' });
+                            res.status(500).json({ error: 'QR generation failed', details: err.message });
                             responseSent = true;
                         }
                     }
                 }
 
                 if (connection === "open") {
+                    console.log('Connection opened, sending session data...');
                     try {
-                        await delay(3000);
+                        await delay(2000);
                         
-                        // Read session data without compression
-                        const sessionData = fs.readFileSync(path.join(__dirname, 'temp', id, 'creds.json'));
-                        const b64data = sessionData.toString('base64');
+                        const sessionFile = path.join(sessionDir, 'creds.json');
+                        if (!fs.existsSync(sessionFile)) {
+                            throw new Error('Session file not found');
+                        }
 
-                        // Send session data to your WhatsApp
+                        const sessionData = fs.readFileSync(sessionFile, 'utf8');
                         await sessionClient.sendMessage(
                             sessionClient.user.id, 
-                            { text: 'TOXIC-LOVER-MD-SESSION;;;' + b64data }
+                            { text: `TOXIC-LOVER-MD-SESSION;;;${sessionData}` }
                         );
-
-                        // Send success message
-                        const successMessage = `
-🔥 *TOXIC-LOVER-MD CONNECTED* 🔥
-
-✅ *Session Successfully Established*
-
-💻 *Next Steps:*
-- Start using your bot commands
-- Check /help for available features
-
-🌟 *Don't Forget To Star Our Repo*
-> https://github.com/your-repo
-
-⚠️ *Keep this number secure*
-_This contains your bot session credentials_
-                        `;
 
                         await sessionClient.sendMessage(
                             sessionClient.user.id,
-                            { text: successMessage }
+                            { text: '✅ TOXIC-LOVER-MD CONNECTED!\n\nYour session has been successfully established.' }
                         );
 
+                        console.log('Session data sent successfully');
                     } catch (err) {
-                        console.error('Session transfer error:', err);
+                        console.error('Failed to send session data:', err);
                     } finally {
-                        // Cleanup
-                        await sessionClient.ws.close();
-                        await removeFile(path.join(__dirname, 'temp', id));
+                        try {
+                            await sessionClient.ws.close();
+                            await removeFile(sessionDir);
+                            console.log('Cleanup completed');
+                        } catch (cleanupErr) {
+                            console.error('Cleanup error:', cleanupErr);
+                        }
                     }
-                }
-                else if (connection === "close" && lastDisconnect?.error?.output?.statusCode !== 401) {
-                    await delay(10000);
-                    TOXIC_LOVER_MD_QR_CODE();
+                } 
+                else if (connection === "close") {
+                    console.log('Connection closed:', lastDisconnect?.error?.message || 'Unknown reason');
+                    if (lastDisconnect?.error?.output?.statusCode !== 401) {
+                        await delay(5000);
+                        TOXIC_LOVER_MD_QR_CODE();
+                    }
                 }
             });
         } catch (err) {
             console.error('Initialization error:', err);
             if (!responseSent) {
                 res.status(503).json({ 
-                    error: 'Service Unavailable',
-                    message: 'Please try again later'
+                    error: 'Initialization failed',
+                    message: err.message,
+                    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
                 });
                 responseSent = true;
             }
-            await removeFile(path.join(__dirname, 'temp', id));
+            await removeFile(sessionDir);
         }
     }
 
@@ -192,8 +178,12 @@ _This contains your bot session credentials_
     } catch (err) {
         console.error('Unexpected error:', err);
         if (!responseSent) {
-            res.status(500).json({ error: 'Internal Server Error' });
+            res.status(500).json({ 
+                error: 'Internal Server Error',
+                message: err.message
+            });
         }
+        await removeFile(sessionDir);
     }
 });
 
